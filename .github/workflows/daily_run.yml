@@ -8,15 +8,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 关键：赋予 Actions 写仓库的权限
     permissions:
-      contents: write
+      contents: write # 必须开启写权限
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -27,18 +24,17 @@ jobs:
         run: |
           pip install requests google-genai pdfplumber
 
-      - name: Run logic and Archive data
+      - name: Run Script
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 自动获取，无需手动设 Secret
         run: python daily_gemini_analysis.py
 
-      # 关键：如果有新文件下载，自动提交回仓库
-      - name: Commit and push changes
+      - name: Push Data to GitHub
         run: |
-          git config --global user.name "DataBot"
-          git config --global user.email "bot@github.com"
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "actions@github.com"
+          # 确保 data 文件夹被加入
           git add data/
-          git commit -m "Archive latest CME/CFTC data: $(date +'%Y-%m-%d')" || echo "No new data to commit"
+          git commit -m "Auto-update Data Lake: $(date +'%Y-%m-%d')" || echo "No changes to commit"
           git push
