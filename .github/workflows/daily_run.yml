@@ -1,36 +1,44 @@
-name: Precious Metal 30D Advanced Analysis
+name: Precious Metal Data Lake Sync
 
 on:
   schedule:
-    # 每天东京时间早上 9:00 自动运行 (对应 UTC 0:00)
     - cron: '0 0 * * 1-5'
-  workflow_dispatch: # 允许您在网页端手动点击 "Run workflow" 按钮触发测试
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 关键：赋予 Actions 写仓库的权限
+    permissions:
+      contents: write
 
     steps:
-      # 1. 拉取您的代码仓库
-      - name: Checkout repository code
+      - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
-      # 2. 安装 Python 环境 (使用 3.9 版本以匹配您的本地环境)
-      - name: Set up Python 3.9
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      # 3. 安装必要的工具库 (解决 pdfplumber 缺失报错的关键步骤)
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install requests google-genai pdfplumber; fi
+          pip install requests google-genai pdfplumber
 
-      # 4. 执行深度分析脚本
-      - name: Run daily analysis script
+      - name: Run logic and Archive data
         env:
-          # 从 GitHub Secrets 中安全读取钥匙，映射给脚本中的 os.getenv
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 自动获取，无需手动设 Secret
         run: python daily_gemini_analysis.py
+
+      # 关键：如果有新文件下载，自动提交回仓库
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "DataBot"
+          git config --global user.email "bot@github.com"
+          git add data/
+          git commit -m "Archive latest CME/CFTC data: $(date +'%Y-%m-%d')" || echo "No new data to commit"
+          git push
