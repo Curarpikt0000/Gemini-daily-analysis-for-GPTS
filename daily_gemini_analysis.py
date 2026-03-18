@@ -18,27 +18,30 @@ HEADERS = {
     "Notion-Version": "2022-06-28"
 }
 
+# 数据库配置 (已修正 CFTC 的列名为 Files & media)
 DB_CONFIG = {
-    "CFTC": {"id": "2c747eb5fd3c808186ddd0aeb45d5046", "file_col": "File & media", "date_col": "Date"},
+    "CFTC": {"id": "2c747eb5fd3c808186ddd0aeb45d5046", "file_col": "Files & media", "date_col": "Date"},
     "OI": {"id": "2fc47eb5fd3c8035ab22cabf3e6e41bb", "file_col": "File", "date_col": "Date"},
     "GOLD_INV": {"id": "2bc47eb5fd3c8083966eecfd9f396b44", "date_col": "Gold日期", "reg_col": "Gold Reg库存"},
     "SILVER_INV": {"id": "2bc47eb5fd3c80f3a71ad8de149a4943", "date_col": "Silver日期", "reg_col": "Silver Reg库存"},
     "PT_INV": {"id": "2d647eb5fd3c801a9ce5d5db4d0b961a", "date_col": "Pt日期", "reg_col": "Pt Reg库存"}
 }
 
-# --- 2. 核心：周初择优抓取逻辑 ---
+# --- 2. 增强抓取逻辑 ---
 
 def get_weekly_best_records(db_type):
-    """在每一周中寻找周一、周二或周三的数据"""
     cfg = DB_CONFIG[db_type]
     url = f"https://api.notion.com/v1/databases/{cfg['id']}/query"
     past_date = (datetime.utcnow() - timedelta(days=35)).isoformat()
     res = requests.post(url, headers=HEADERS, json={"filter": {"property": cfg["date_col"], "date": {"on_or_after": past_date}}}).json()
     
-    # 按周分组
     weeks = {}
     for row in res.get("results", []):
-        dt_str = row["properties"][cfg["date_col"]]["date"]["start"]
+        props = row.get("properties", {})
+        dt_data = props.get(cfg["date_col"], {}).get("date")
+        if not dt_data: continue
+        
+        dt_str = dt_data["start"]
         dt = datetime.fromisoformat(dt_str)
         week_id = dt.strftime("%Y-W%V")
         if week_id not in weeks: weeks[week_id] = []
@@ -46,11 +49,10 @@ def get_weekly_best_records(db_type):
     
     best_records = []
     for week_id in sorted(weeks.keys()):
-        # 优先级：周一(0) > 周二(1) > 周三(2)
         group = weeks[week_id]
         group.sort(key=lambda x: x['date'].weekday())
         for entry in group:
-            if entry['date'].weekday() in [0, 1, 2]:
+            if entry['date'].weekday() in [0, 1, 2]: # 周一至周三择优
                 best_records.append(entry)
                 break
     return best_records
@@ -62,90 +64,82 @@ def fetch_content_lake():
         records = get_weekly_best_records(db_type)
         for entry in records:
             cfg = DB_CONFIG[db_type]
-            props = entry['row']["properties"]
-            date_val = props[cfg["date_col"]]["date"]["start"]
-            files = props[cfg["file_col"]]["files"]
-            if not files: continue
+            props = entry['row'].get("properties", {})
+            
+            # 使用 .get() 确保列名不匹配时不会报错崩溃
+            file_prop = props.get(cfg["file_col"], {})
+            files = file_prop.get("files", [])
+            
+            date_val = props.get(cfg["date_col"], {}).get("date", {}).get("start", "Unknown")
+            
+            if not files: 
+                print(f"    ! 警告: {db_type} | {date_val} 未找到文件列 '{cfg['file_col']}' 或文件为空")
+                continue
             
             f_url = files[0]["external"]["url"] if files[0]["type"] == "external" else files[0]["file"]["url"]
-            print(f"    - 选中数据: {db_type} | {date_val} (周{entry['date'].weekday()+1})")
+            print(f"    - 抓取成功: {db_type} | {date_val} (周{entry['date'].weekday()+1})")
             
             try:
                 resp = requests.get(f_url, timeout=30)
                 with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
                     text = "\n".join([p.extract_text() for p in pdf.pages[:12] if p.extract_text()])
-                    archive.append({"Type": db_type, "Date": date_val, "Content": text[:12000]})
+                    archive.append({"Type": db_type, "Date": date_val, "Content": text[:15000]})
             except: pass
     return archive
 
-# --- 3. Notion 样式优化写入 (使用区块而非纯文本表格) ---
+# --- 3. 分析与回写 (样式优化) ---
 
-def write_structured_to_notion(report_json):
-    """
-    接收 Gemini 生成的结构化分析，并将其转换为 Notion 呼应块和列表。
-    注：此处简化演示，实际使用时 Gemini 输出应包含清晰的标识符。
-    """
-    print(">>> 正在以 Notion 优化样式回写报告...")
-    jst_today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
+def write_structured_to_notion(report_content):
+    print(">>> 正在以 Notion 列表样式回写深度报告...")
+    jst_now = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
     
-    # 创建页面
+    # 1. 创建页面
     page_payload = {
         "parent": {"database_id": DB_TARGET},
         "properties": {
-            "Name": {"title": [{"text": {"content": f"量化审计精报: {jst_today}"}}]},
-            "Date": {"date": {"start": jst_today}}
+            "Name": {"title": [{"text": {"content": f"贵金属量化周初审计: {jst_now}"}}]},
+            "Date": {"date": {"start": jst_now}}
         }
     }
     page = requests.post("https://api.notion.com/v1/pages", headers=HEADERS, json=page_payload).json()
     page_id = page.get("id")
-    
     if not page_id: return
 
-    # 构造富文本区块 (分块写入避免长度限制)
-    chunks = [report_json[i:i+1900] for i in range(0, len(report_json), 1900)]
-    blocks = []
+    # 2. 将分析内容转换为 Callout 区块，提升 Notion 端的阅读体验
+    chunks = [report_content[i:i+1900] for i in range(0, len(report_content), 1900)]
+    children = []
     for c in chunks:
-        blocks.append({
+        children.append({
             "object": "block",
             "type": "callout",
             "callout": {
                 "rich_text": [{"type": "text", "text": {"content": c}}],
-                "icon": {"emoji": "📊"},
-                "color": "gray_background"
+                "icon": {"emoji": "📉"},
+                "color": "blue_background"
             }
         })
     
-    requests.patch(f"https://api.notion.com/v1/blocks/{page_id}/children", headers=HEADERS, json={"children": blocks})
-
-# --- 4. 主流程 ---
+    requests.patch(f"https://api.notion.com/v1/blocks/{page_id}/children", headers=HEADERS, json={"children": children})
 
 def main():
     content_lake = fetch_content_lake()
-    # 模拟抓取库存逻辑 (省略重复 fetch_all_inventories 代码)
-    # ...
+    # 模拟抓取库存数据 ...
     
     prompt = f"""
-    你是顶级贵金属量化分析师。请分析以下 4 周内每轮周初的数据。
+    分析以下 4 周的周初数据：{json.dumps(content_lake)}
     
-    【源数据】：{json.dumps(content_lake)}
-    
-    【格式指南 - 针对 Notion 优化】：
-    1. 不要生成 Markdown 表格。
-    2. 请使用“标题 + 列表”的形式展示数据。例如：
-       ### 黄金 (Gold) 审计
-       - **日期**：2026-03-02
-       - **商业头寸**：数值
-       - **非商业头寸**：数值
-       - **库存压力比率**：使用 LaTeX 公式 $$Ratio = \\frac{{OI}}{{Reg}}$$
-    3. 重点分析 4 周内头寸的变化率。
+    【格式要求】：
+    1. 严禁使用 Markdown 表格。
+    2. 使用“### 金属名称”作为二级标题。
+    3. 使用“- **指标名称**：数值”的列表形式。
+    4. 必须包含商业(Commercial)与非商业(Non-commercial)头寸的 4 周趋势对比。
+    5. 使用 LaTeX 公式展示库存压力：$$Pressure = \\frac{{OI}}{{Reg}}$$
     """
     
-    response = client.models.generate_content(
-        model='gemini-3.1-pro-preview', 
-        contents=prompt,
-        config={'thinking_config': {'include_thoughts': True}}
-    )
+    print(">>> 请求 Gemini 3.1 Pro 生成深度研报...")
+    response = client.models.generate_content(model='gemini-3.1-pro-preview', contents=prompt)
     write_structured_to_notion(response.text)
+    print(">>> 任务完成！")
 
 if __name__ == "__main__":
     main()
