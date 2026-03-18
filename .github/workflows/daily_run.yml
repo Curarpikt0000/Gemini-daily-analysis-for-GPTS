@@ -1,30 +1,36 @@
-name: Daily Precious Metal Analysis
+name: Precious Metal 30D Advanced Analysis
 
 on:
   schedule:
-    # 每天东京时间早上 9:00 运行 (对应 UTC 0:00)
+    # 每天东京时间早上 9:00 自动运行 (对应 UTC 0:00)
     - cron: '0 0 * * 1-5'
-  workflow_dispatch: # 允许您在网页上点击按钮手动触发测试
+  workflow_dispatch: # 允许您在网页端手动点击 "Run workflow" 按钮触发测试
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      # 1. 拉取您的代码仓库
+      - name: Checkout repository code
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      # 2. 安装 Python 环境 (使用 3.9 版本以匹配您的本地环境)
+      - name: Set up Python 3.9
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
+      # 3. 安装必要的工具库 (解决 pdfplumber 缺失报错的关键步骤)
       - name: Install dependencies
         run: |
-          pip install requests google-genai
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install requests google-genai pdfplumber; fi
 
-      - name: Run analysis script
+      # 4. 执行深度分析脚本
+      - name: Run daily analysis script
         env:
+          # 从 GitHub Secrets 中安全读取钥匙，映射给脚本中的 os.getenv
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python daily_gemini_analysis.py
