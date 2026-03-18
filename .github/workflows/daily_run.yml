@@ -1,40 +1,55 @@
-name: Precious Metal Data Lake Sync
+name: Precious Metal Data Lake Sync & Analysis
 
 on:
   schedule:
+    # 每天东京时间早上 9:00 运行 (对应 UTC 0:00)
     - cron: '0 0 * * 1-5'
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动点击 "Run workflow" 触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    # 关键：必须赋予 Actions 写入仓库的权限，否则无法生成 data 文件夹
     permissions:
-      contents: write # 必须开启写权限
+      contents: write
 
     steps:
-      - name: Checkout code
+      # 1. 拉取代码
+      - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # 拉取完整历史，方便 git push
 
-      - name: Set up Python
+      # 2. 设置 Python 环境 (匹配您的 3.9 版本)
+      - name: Set up Python 3.9
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
+      # 3. 安装依赖库
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install requests google-genai pdfplumber
 
-      - name: Run Script
+      # 4. 执行 Python 脚本 (处理数据湖 + 提交 Notion)
+      - name: Run Analysis Script
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python daily_gemini_analysis.py
 
-      - name: Push Data to GitHub
+      # 5. 核心：将下载并解析好的 data 文件夹推送到 GitHub 仓库
+      - name: Commit and Push Data Lake
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "actions@github.com"
-          # 确保 data 文件夹被加入
+          # 检查是否有新解析的 txt 文件产生
           git add data/
-          git commit -m "Auto-update Data Lake: $(date +'%Y-%m-%d')" || echo "No changes to commit"
-          git push
+          if git diff --staged --quiet; then
+            echo "没有新数据需要存档"
+          else
+            git commit -m "Auto-archive: Synchronized CME/CFTC data lake $(date +'%Y-%m-%d')"
+            git push
+          fi
