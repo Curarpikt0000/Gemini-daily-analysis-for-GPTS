@@ -15,17 +15,19 @@ jobs:
       contents: write
 
     steps:
-      # 1. 拉取代码
+      # 1. 拉取代码 (增加 fetch-depth 以便稳健地进行 Git Push)
       - name: Checkout repository
-        uses: actions/checkout@v3
-
-      # 2. 设置 Python 环境 (匹配您的 3.9 版本)
-      - name: Set up Python 3.9
-        uses: actions/setup-python@v4
+        uses: actions/checkout@v4
         with:
-          python-version: '3.9'
+          fetch-depth: 0
 
-      # 3. 安装 Necessary Dependencies (核心修正)
+      # 2. 设置 Python 环境 (升级到 3.10 消除 EOL 警告)
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # 3. 安装依赖 (显式安装核心库)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -38,14 +40,14 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python daily_gemini_analysis.py
 
-      # 5. 核心修正：将云端新产生的文件 Push 回 GitHub 仓库
+      # 5. 核心：将云端新产生的文件 Push 回 GitHub 仓库
       - name: Commit and Push Data Lake
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "actions@github.com"
-          # 确保 data/ 文件夹被加入
+          # 确保 data/ 文件夹及其子目录都被加入
           git add data/
-          # 检查是否有新解析的文件
+          # 检查是否有新解析的文件，避免空提交报错
           if git diff --staged --quiet; then
             echo "没有发现新解析的数据，不需要存档提交。"
           else
