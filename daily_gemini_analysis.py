@@ -4,21 +4,26 @@ import json
 import io
 import pdfplumber
 from datetime import datetime, timedelta
-from google import genai
+import vertexai
+from vertexai.generative_models import GenerativeModel
 
 # --- 1. 配置与鉴权 ---
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Vertex AI 配置
+PROJECT_ID = "你的PROJECT_ID"  # 替换为你的真实项目 ID
+LOCATION = "us-central1"
 DB_TARGET = "32747eb5fd3c800e9c3bfe9b461aab94"
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# 初始化 Vertex AI (鉴权由 GitHub Action 的 auth 步骤自动注入)
+vertexai.init(project=PROJECT_ID, location=LOCATION)
+model = GenerativeModel("gemini-1.5-pro-002")
+
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
     "Content-Type": "application/json",
     "Notion-Version": "2022-06-28"
 }
 
-# 数据库配置 (已修正 CFTC 的列名为 Files & media)
 DB_CONFIG = {
     "CFTC": {"id": "2c747eb5fd3c808186ddd0aeb45d5046", "file_col": "Files & media", "date_col": "Date"},
     "OI": {"id": "2fc47eb5fd3c8035ab22cabf3e6e41bb", "file_col": "File", "date_col": "Date"},
@@ -27,7 +32,7 @@ DB_CONFIG = {
     "PT_INV": {"id": "2d647eb5fd3c801a9ce5d5db4d0b961a", "date_col": "Pt日期", "reg_col": "Pt Reg库存"}
 }
 
-# --- 2. 增强抓取逻辑 ---
+# --- 2. 抓取逻辑 ---
 
 def get_weekly_best_records(db_type):
     cfg = DB_CONFIG[db_type]
@@ -52,32 +57,27 @@ def get_weekly_best_records(db_type):
         group = weeks[week_id]
         group.sort(key=lambda x: x['date'].weekday())
         for entry in group:
-            if entry['date'].weekday() in [0, 1, 2]: # 周一至周三择优
+            if entry['date'].weekday() in [0, 1, 2]:
                 best_records.append(entry)
                 break
     return best_records
 
 def fetch_content_lake():
-    print(">>> 正在执行【周初择优】抓取逻辑...")
+    print(">>> 正在执行抓取...")
     archive = []
     for db_type in ["CFTC", "OI"]:
         records = get_weekly_best_records(db_type)
         for entry in records:
             cfg = DB_CONFIG[db_type]
             props = entry['row'].get("properties", {})
-            
-            # 使用 .get() 确保列名不匹配时不会报错崩溃
             file_prop = props.get(cfg["file_col"], {})
             files = file_prop.get("files", [])
-            
             date_val = props.get(cfg["date_col"], {}).get("date", {}).get("start", "Unknown")
             
-            if not files: 
-                print(f"    ! 警告: {db_type} | {date_val} 未找到文件列 '{cfg['file_col']}' 或文件为空")
-                continue
+            if not files: continue
             
             f_url = files[0]["external"]["url"] if files[0]["type"] == "external" else files[0]["file"]["url"]
-            print(f"    - 抓取成功: {db_type} | {date_val} (周{entry['date'].weekday()+1})")
+            print(f"    - 抓取成功: {db_type} | {date_val}")
             
             try:
                 resp = requests.get(f_url, timeout=30)
@@ -87,13 +87,12 @@ def fetch_content_lake():
             except: pass
     return archive
 
-# --- 3. 分析与回写 (样式优化) ---
+# --- 3. 分析与回写 ---
 
 def write_structured_to_notion(report_content):
-    print(">>> 正在以 Notion 列表样式回写深度报告...")
+    print(">>> 正在回写深度报告...")
     jst_now = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")
     
-    # 1. 创建页面
     page_payload = {
         "parent": {"database_id": DB_TARGET},
         "properties": {
@@ -105,7 +104,6 @@ def write_structured_to_notion(report_content):
     page_id = page.get("id")
     if not page_id: return
 
-    # 2. 将分析内容转换为 Callout 区块，提升 Notion 端的阅读体验
     chunks = [report_content[i:i+1900] for i in range(0, len(report_content), 1900)]
     children = []
     for c in chunks:
@@ -118,12 +116,10 @@ def write_structured_to_notion(report_content):
                 "color": "blue_background"
             }
         })
-    
     requests.patch(f"https://api.notion.com/v1/blocks/{page_id}/children", headers=HEADERS, json={"children": children})
 
 def main():
     content_lake = fetch_content_lake()
-    # 模拟抓取库存数据 ...
     
     prompt = f"""
     分析以下 4 周的周初数据：{json.dumps(content_lake)}
@@ -136,8 +132,8 @@ def main():
     5. 使用 LaTeX 公式展示库存压力：$$Pressure = \\frac{{OI}}{{Reg}}$$
     """
     
-    print(">>> 请求 Gemini 3.1 Pro 生成深度研报...")
-    response = client.models.generate_content(model='gemini-3.1-pro-preview', contents=prompt)
+    print(">>> 请求 Vertex AI 生成深度研报...")
+    response = model.generate_content(prompt)
     write_structured_to_notion(response.text)
     print(">>> 任务完成！")
 
