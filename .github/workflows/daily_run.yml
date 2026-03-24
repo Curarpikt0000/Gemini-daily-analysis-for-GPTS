@@ -2,46 +2,56 @@ name: Precious Metal Data Lake Sync & Analysis
 
 on:
   schedule:
+    # 东京时间 9:00 (UTC 0:00) 运行
     - cron: '0 0 * * 1-5'
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动触发测试
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
+    # 核心权限设置
     permissions:
-      contents: write
-      id-token: write # 谷歌鉴权需要
+      contents: write   # 用于 Git Push 存档数据
+      id-token: write   # 必须开启！用于 GitHub 与 Google Cloud 之间的 OIDC 安全握手
 
     steps:
+      # 1. 拉取代码
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # 2. 设置 Python 环境
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # 新增：Google Cloud 鉴权步骤
+      # 3. Google Cloud 鉴权 (Workload Identity 模式)
+      # 这种模式不需要在 GitHub Secrets 里存任何 GCP 密钥
       - name: 'Authenticate to Google Cloud'
         uses: 'google-github-actions/auth@v2'
         with:
-          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+          # 刚刚通过 Cloud Shell 创建成功的 Provider 路径
+          workload_identity_provider: 'projects/147203316043/locations/global/workloadIdentityPools/final-sync-pool/providers/github-provider'
+          # 刚刚查到的真实服务账号 Email
+          service_account: 'github-gemini-analyzer@project-69f3bb4a-906b-4088-8da.iam.gserviceaccount.com'
 
+      # 4. 安装依赖
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 注意这里换成了 google-cloud-aiplatform
+          # 使用企业级 AI 库 google-cloud-aiplatform 以便消耗 $300 赠金
           pip install requests google-cloud-aiplatform pdfplumber
 
+      # 5. 执行分析脚本
       - name: Run Analysis Script
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          # 不再需要 GEMINI_API_KEY，由 auth 步骤处理
         run: python daily_gemini_analysis.py
 
+      # 6. 将新产生的数据存档回仓库
       - name: Commit and Push Data Lake
         run: |
           git config --global user.name "GitHub Action Bot"
