@@ -2,52 +2,51 @@ name: Precious Metal Data Lake Sync & Analysis
 
 on:
   schedule:
-    # 每天东京时间早上 9:00 自动运行 (对应 UTC 0:00)
     - cron: '0 0 * * 1-5'
-  workflow_dispatch: # 允许手动点击 Run workflow 触发测试
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
-    # 必须显式开启仓库写权限，否则无法更新文件夹
     permissions:
       contents: write
+      id-token: write # 谷歌鉴权需要
 
     steps:
-      # 1. 拉取代码 (增加 fetch-depth 以便稳健地进行 Git Push)
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2. 设置 Python 环境 (升级到 3.10 消除 EOL 警告)
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # 3. 安装依赖 (显式安装核心库)
+      # 新增：Google Cloud 鉴权步骤
+      - name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests google-genai pdfplumber
+          # 注意这里换成了 google-cloud-aiplatform
+          pip install requests google-cloud-aiplatform pdfplumber
 
-      # 4. 执行数据同步与清洗脚本
       - name: Run Analysis Script
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # 不再需要 GEMINI_API_KEY，由 auth 步骤处理
         run: python daily_gemini_analysis.py
 
-      # 5. 核心：将云端新产生的文件 Push 回 GitHub 仓库
       - name: Commit and Push Data Lake
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "actions@github.com"
-          # 确保 data/ 文件夹及其子目录都被加入
-          git add data/
-          # 检查是否有新解析的文件，避免空提交报错
+          git add data/ || true
           if git diff --staged --quiet; then
             echo "没有发现新解析的数据，不需要存档提交。"
           else
