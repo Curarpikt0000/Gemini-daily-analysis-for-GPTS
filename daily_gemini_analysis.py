@@ -9,13 +9,14 @@ from vertexai.generative_models import GenerativeModel
 
 # --- 1. 配置与鉴权 ---
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-# Vertex AI 配置
-PROJECT_ID = "你的PROJECT_ID"  # 替换为你的真实项目 ID
+# 你的真实 Google Cloud 项目 ID
+PROJECT_ID = "project-69f3bb4a-906b-4088-8da"
 LOCATION = "us-central1"
 DB_TARGET = "32747eb5fd3c800e9c3bfe9b461aab94"
 
 # 初始化 Vertex AI (鉴权由 GitHub Action 的 auth 步骤自动注入)
 vertexai.init(project=PROJECT_ID, location=LOCATION)
+# 使用 1.5 Pro 模型，赠金完全覆盖
 model = GenerativeModel("gemini-1.5-pro-002")
 
 HEADERS = {
